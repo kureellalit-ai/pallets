@@ -4,6 +4,13 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>Pallet batch scan</title>
+<link rel="manifest" href="manifest.json">
+<meta name="theme-color" content="#3c3489">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-title" content="Pallet Scan">
+<link rel="apple-touch-icon" href="icon-180.png">
+<link rel="icon" href="icon-192.png">
 <style>
   :root{--bg:#f6f6f4;--card:#fff;--ink:#1d1d1b;--mute:#6b6b66;--line:#d9d9d4;--accent:#3c3489;--ok:#1d7a3e;--bad:#a32d2d}
   @media (prefers-color-scheme:dark){:root{--bg:#161615;--card:#222221;--ink:#f1f0ea;--mute:#a3a29b;--line:#3a3a38;--accent:#afa9ec;--ok:#6fcf8e;--bad:#f09595}}
@@ -75,7 +82,8 @@
   </div>
 
   <button class="main" id="sendBtn" disabled>Send batch</button>
-  <p class="sub" id="last" style="margin-top:12px"></p>
+  <p class="sub" id="pend" style="margin-top:12px;color:var(--bad);font-weight:600"></p>
+  <p class="sub" id="last" style="margin-top:6px"></p>
 </main>
 
 <script>
@@ -216,31 +224,49 @@ var __Html5QrcodeLibrary__;(()=>{var t={449:function(t,e,r){!function(t){"use st
   }
   window.__post = post;
 
+  function getBox(){ try{ return JSON.parse(load("pallet_outbox")||"[]"); }catch(e){ return []; } }
+  function setBox(a){ store("pallet_outbox", JSON.stringify(a)); showPend(); }
+  function showPend(){ var n = getBox().length; $("pend").textContent = n ? (n + " pallet" + (n>1?"s":"") + " saved on this phone, waiting for internet. Open this app with signal and they will send.") : ""; }
+  var flushing = false;
+  function flush(){
+    if (flushing) return; var box = getBox(); if (!box.length) return;
+    flushing = true;
+    (function next(){
+      var cur = getBox();
+      if (!cur.length){ flushing = false; say("Saved pallets sent.", "ok"); return; }
+      post(cur[0]).then(function(){ cur.shift(); setBox(cur); next(); }).catch(function(){ flushing = false; });
+    })();
+  }
+  window.__flush = flush; window.__box = getBox;
+  window.addEventListener("online", flush);
+
   $("sendBtn").onclick = function(){
     if (!ready() || st.busy) return;
     st.busy = true; render();
-    var ids = st.ids.slice(), ev = evObj(), bid = batchId(), sent = [], failed = [];
+    var ids = st.ids.slice(), ev = evObj(), bid = batchId(), sent = [], queued = [];
     var name = $("who").value.trim();
     (function next(i){
       if (i >= ids.length){
-        st.ids = failed; st.busy = false;
-        if (failed.length){ say("Sent " + sent.length + ". " + failed.length + " failed (kept in the list). Check internet, then Send again.", "bad"); }
-        else {
+        st.ids = []; st.busy = false;
+        if (queued.length){
+          say("Sent " + sent.length + ". " + queued.length + " saved on this phone (no internet). They send automatically when you are online.", "bad");
+        } else {
           say("Sent " + sent.length + " pallets. Batch " + bid + ".", "ok");
-          store("pallet_last", sent.length + " pallets, " + st.event + ", " + new Date().toLocaleString() + ", batch " + bid);
-          $("last").textContent = "Last batch: " + load("pallet_last");
         }
+        store("pallet_last", ids.length + " pallets, " + st.event + ", " + new Date().toLocaleString() + ", batch " + bid + (queued.length ? " (" + queued.length + " waiting)" : ""));
+        $("last").textContent = "Last batch: " + load("pallet_last");
         render(); return;
       }
       say("Sending " + (i+1) + " of " + ids.length + "...", "");
       var f = {}; f[CFG.E_ASSET]=ids[i]; f[CFG.E_EVENT]=st.event; f[CFG.E_LOC]=st.loc; f[CFG.E_NAME]=name;
       if (ev.product) f[CFG.E_PRODUCT]=st.product;
       f[CFG.E_BATCH]=bid;
-      post(f).then(function(){ sent.push(ids[i]); next(i+1); }).catch(function(){ failed.push(ids[i]); next(i+1); });
+      post(f).then(function(){ sent.push(ids[i]); next(i+1); }).catch(function(){ var b = getBox(); b.push(f); setBox(b); queued.push(ids[i]); next(i+1); });
     })(0);
   };
   var lastB = load("pallet_last"); if (lastB) $("last").textContent = "Last batch: " + lastB;
-  render();
+  render(); showPend(); flush();
+  if ("serviceWorker" in navigator) navigator.serviceWorker.register("sw.js").catch(function(){});
 })();
 </script>
 </body>
